@@ -1,0 +1,1 @@
+* * * * * php /var/www/html/seat/artisan schedule:run
