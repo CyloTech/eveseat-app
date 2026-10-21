@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+mkdir -p /run/php /run/mysqld /run/redis /home/appbox/logs/redis /home/appbox/logs/mysql /home/appbox/logs/seat
+chown -R 1000:1000 /run/php /run/mysqld /run/redis /home/appbox
