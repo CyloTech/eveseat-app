@@ -29,6 +29,8 @@ artifact_name=$(get artifact_name)
 artifact_ref=$(get artifact_ref)
 php_version=$(get php_version)
 source_image_id=$(get source_image_id)
+source_rootfs_layers_sha256=$(get source_rootfs_layers_sha256)
+source_image_created=$(get source_image_created)
 docker_library_commit=$(get docker_library_commit)
 docker_library_path=$(get docker_library_path)
 base_image=$(get base_image)
@@ -52,8 +54,13 @@ case "$source_image" in local/*:*) ;; *) fail "source image must be a local/ ref
 case "$source_image" in *[!A-Za-z0-9._/:-]*) fail "bad source image reference" ;; esac
 [ ! -e "$out_dir" ] || fail "$out_dir already exists"
 
-[ "$(docker image inspect --format '{{.Id}}' "$source_image")" = "$source_image_id" ] \
-    || fail "$source_image is not the node-built image $source_image_id"
+# Image IDs differ between image stores (config digest on the node's classic
+# store, manifest digest on a containerd store), so the loaded image is
+# identified by its layer diff IDs and creation time as recorded on the node.
+[ "$(docker image inspect --format '{{json .RootFS.Layers}}' "$source_image" | sha256sum | cut -c1-64)" = "$source_rootfs_layers_sha256" ] \
+    || fail "$source_image does not have the layers of the node-built image $source_image_id"
+[ "$(docker image inspect --format '{{.Created}}' "$source_image")" = "$source_image_created" ] \
+    || fail "$source_image was not created at $source_image_created like the node-built image"
 [ "$(sha256sum < "$here/docker-library/Dockerfile" | cut -c1-64)" = "$dockerfile_sha256" ] \
     || fail "docker-library/Dockerfile is not the file the image was built from"
 
@@ -118,7 +125,8 @@ Provenance:
 | PHP source signature | verified by the recipe with gpg, key $php_signing_key |
 | Built on | $build_host, $build_method |
 | Built | $build_started to $build_finished |
-| Built image ID | $source_image_id |
+| Built image ID (config digest) | $source_image_id |
+| Built image layers (sha256 of RootFS.Layers JSON) | $source_rootfs_layers_sha256 |
 | Image archive sha256 | $image_archive_sha256 (verified on the node and on the builder) |
 
 Use it from a Dockerfile, pinned by digest, for example:

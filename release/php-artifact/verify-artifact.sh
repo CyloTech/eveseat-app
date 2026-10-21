@@ -31,6 +31,8 @@ get() {
 artifact_ref=$(get artifact_ref)
 php_version=$(get php_version)
 source_image_id=$(get source_image_id)
+source_rootfs_layers_sha256=$(get source_rootfs_layers_sha256)
+source_image_created=$(get source_image_created)
 known_ref=$(get registry_known_ref)
 
 [ "$#" -eq 2 ] || fail "usage: $0 <artifact image> <source image>"
@@ -81,8 +83,13 @@ case "$status" in
 esac
 
 echo "== Source image $source_image"
-[ "$(docker image inspect --format '{{.Id}}' "$source_image")" = "$source_image_id" ] \
-    || fail "$source_image is not the node-built image $source_image_id"
+# Image IDs differ between image stores (config digest on the node's classic
+# store, manifest digest on a containerd store), so the loaded image is
+# identified by its layer diff IDs and creation time as recorded on the node.
+[ "$(docker image inspect --format '{{json .RootFS.Layers}}' "$source_image" | sha256sum | cut -c1-64)" = "$source_rootfs_layers_sha256" ] \
+    || fail "$source_image does not have the layers of the node-built image $source_image_id"
+[ "$(docker image inspect --format '{{.Created}}' "$source_image")" = "$source_image_created" ] \
+    || fail "$source_image was not created at $source_image_created like the node-built image"
 in_source() {
     docker run --rm --platform linux/amd64 --network none --user 0:0 \
         -v "$release_dir:/release:ro" --entrypoint sh "$source_image" "$@"
