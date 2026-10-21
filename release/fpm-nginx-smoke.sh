@@ -92,10 +92,25 @@ CONF
 nginx -t -c "$work/nginx.conf" >/dev/null 2>&1 || { nginx -t -c "$work/nginx.conf"; exit 1; }
 nginx -c "$work/nginx.conf"
 
+# Wait for php-fpm to accept connections, then post the upload.
+fpm_ready=no
+for attempt in $(seq 1 60); do
+    kill -0 "$fpm_pid" 2>/dev/null || break
+    if php -n -r '$s = @fsockopen("127.0.0.1", 9187, $e, $m, 1); exit($s ? 0 : 1);'; then
+        fpm_ready=yes
+        break
+    fi
+    sleep 0.5
+done
+if [ "$fpm_ready" != yes ]; then
+    echo "php-fpm did not start listening on 127.0.0.1:9187" >&2
+    cat "$work/fpm.out" "$work/fpm.log" 2>/dev/null | tail -20 >&2
+    exit 1
+fi
 result=
-for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+for attempt in $(seq 1 20); do
     result=$(curl -s --max-time 5 -F a=b -F "f=@$work/upload.txt" http://127.0.0.1:8187/upload.php || true)
-    [ -n "$result" ] && break
+    case "$result" in fpm-fcgi*) break ;; esac
     sleep 0.5
 done
 expected_result="fpm-fcgi $expected 1:16:0:b:$upload_sha"
