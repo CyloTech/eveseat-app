@@ -1,1 +1,1 @@
-* * * * * php /var/www/html/seat/artisan schedule:run
+* * * * * /usr/local/bin/php /home/appbox/public_html/seat/artisan schedule:run --no-interaction >> /home/appbox/logs/seat/scheduler.log 2>&1
