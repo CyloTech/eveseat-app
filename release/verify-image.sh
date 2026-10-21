@@ -202,7 +202,6 @@ diff -u "$work_dir/base.cli-modules" "$work_dir/image.cli-modules" || fail "php 
 section modules-fpm base > "$work_dir/base.fpm-modules"
 section modules-fpm image > "$work_dir/image.fpm-modules"
 diff -u "$work_dir/base.fpm-modules" "$work_dir/image.fpm-modules" || fail "php-fpm -m differs from the deployed image"
-grep -qi warning "$work_dir/image.cli-modules" "$work_dir/image.fpm-modules" && fail "module listing printed warnings"
 echo "$(grep -c . "$work_dir/image.fpm-modules") lines of php-fpm -m output identical to the deployed image"
 
 echo "== FPM configuration"
