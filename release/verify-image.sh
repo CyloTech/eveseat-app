@@ -140,8 +140,8 @@ if ! diff -u "$work_dir/expected-env" "$work_dir/image-env" > "$work_dir/env-dif
     sed 's/=.*/=<value hidden>/' "$work_dir/env-diff" >&2
     fail "environment differs from the deployed image other than PHP_VERSION=$expected_php"
 fi
-docker image inspect --format '{{json .Config.Labels}}' "$gate_base_ref" | jq -S 'del(.["org.appbox.php-source"])' > "$work_dir/base-labels"
-docker image inspect --format '{{json .Config.Labels}}' "$image_ref" | jq -S 'del(.["org.appbox.php-source"])' > "$work_dir/image-labels"
+docker image inspect --format '{{json .Config.Labels}}' "$gate_base_ref" | jq -S '(. // {}) | del(.["org.appbox.php-source"])' > "$work_dir/base-labels"
+docker image inspect --format '{{json .Config.Labels}}' "$image_ref" | jq -S '(. // {}) | del(.["org.appbox.php-source"])' > "$work_dir/image-labels"
 diff -u "$work_dir/base-labels" "$work_dir/image-labels" || fail "labels differ from the deployed image"
 echo "entrypoint, command, user, ports, volumes, labels and environment unchanged except PHP_VERSION"
 
