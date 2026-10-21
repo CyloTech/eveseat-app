@@ -1,6 +1,8 @@
 #!/bin/sh
 # Release gate for an image built FROM the deployed digest with PHP copied in
-# from an official PHP image (see the Dockerfile and release/image.env).
+# from a digest-pinned PHP image: an official php image, or a FROM-scratch
+# PHP artifact (repo.cylo.net/php-artifacts, see release/php-artifact/). See
+# the Dockerfile and release/image.env.
 #
 # Usage: release/verify-image.sh <image>
 #
@@ -35,6 +37,9 @@ done
 gate_fpm_prepare=$(sed -n "s/^gate_fpm_prepare=//p" "$release_dir/image.env")
 case "$gate_fpm_prepare" in ''|/*) ;; *) fail "release/image.env: gate_fpm_prepare must be an absolute path" ;; esac
 case "$gate_fpm_prepare" in *[!A-Za-z0-9._/-]*) fail "release/image.env: bad gate_fpm_prepare" ;; esac
+gate_web_prepare=$(sed -n "s/^gate_web_prepare=//p" "$release_dir/image.env")
+case "$gate_web_prepare" in ''|/*) ;; *) fail "release/image.env: gate_web_prepare must be an absolute path" ;; esac
+case "$gate_web_prepare" in *[!A-Za-z0-9._/-]*) fail "release/image.env: bad gate_web_prepare" ;; esac
 
 [ "$#" -eq 1 ] || fail "usage: $0 <image>"
 image_ref=$1
@@ -60,7 +65,7 @@ if [ -n "${GATE_TRIAL_PHP_VERSION:-}" ]; then
     echo "TRIAL: expecting PHP $expected_php instead of $gate_php_release_version; this run cannot approve a release"
 fi
 
-for tool in docker curl jq diff sort comm awk; do
+for tool in docker curl jq diff sort comm awk tar sha256sum; do
     command -v "$tool" >/dev/null 2>&1 || fail "missing tool: $tool"
 done
 
@@ -143,8 +148,8 @@ echo "entrypoint, command, user, ports, volumes, labels and environment unchange
 echo "== PHP source image"
 php_source=$(docker image inspect --format '{{index .Config.Labels "org.appbox.php-source"}}' "$image_ref")
 case "$php_source" in
-    php:*@sha256:*) ;;
-    *) fail "org.appbox.php-source label '$php_source' is not a digest-pinned official PHP image" ;;
+    php:*@sha256:*|repo.cylo.net/php-artifacts:*@sha256:*) ;;
+    *) fail "org.appbox.php-source label '$php_source' is not a digest-pinned PHP image or artifact" ;;
 esac
 php_source_digest=${php_source#*@sha256:}
 case "$php_source_digest" in
@@ -164,11 +169,34 @@ docker image inspect "$php_source" >/dev/null 2>&1 \
 echo "PHP copied from $php_source"
 
 echo "== Reports (deployed, source, new)"
-in_image_as "$gate_base_ref" sh /release/in-image-report.sh "$gate_php_extension_dir" $gate_fpm_prepare > "$work_dir/base.report" 2>&1 \
+in_image_as "$gate_base_ref" sh /release/in-image-report.sh "$gate_php_extension_dir" "$gate_fpm_prepare" "$gate_web_prepare" > "$work_dir/base.report" 2>&1 \
     || fail "report failed in the deployed image"
-in_image_as "$php_source" sh /release/in-image-report.sh "$gate_php_extension_dir" $gate_fpm_prepare > "$work_dir/source.report" 2>&1 \
-    || fail "report failed in the PHP source image"
-in_image_as "$image_ref" sh /release/in-image-report.sh "$gate_php_extension_dir" $gate_fpm_prepare > "$work_dir/image.report" 2>&1 \
+# The source may be a FROM-scratch artifact with no shell, so its file list
+# is read from an export on the host, in the same format as in-image-report.
+mkdir "$work_dir/source-root"
+source_container=$(docker create --platform linux/amd64 --network none "$php_source" true)
+docker export "$source_container" | tar -xp -C "$work_dir/source-root" usr/local \
+    || { docker rm "$source_container" >/dev/null; fail "cannot export the PHP source image"; }
+docker rm "$source_container" >/dev/null
+{
+    echo "@@ files"
+    (
+        cd "$work_dir/source-root"
+        for path in usr/local/bin/php usr/local/bin/php-config usr/local/bin/phpize \
+            usr/local/sbin/php-fpm usr/local/include/php usr/local/lib/php/build "${gate_php_extension_dir#/}"; do
+            [ -e "$path" ] || [ -L "$path" ] || continue
+            find "$path" \( -type f -o -type l \) -print
+        done | sort | while IFS= read -r path; do
+            if [ -L "$path" ]; then
+                echo "link $(readlink "$path") /$path"
+            else
+                echo "file $(sha256sum < "$path" | cut -c1-64) /$path"
+            fi
+        done
+    )
+    echo "@@ end"
+} > "$work_dir/source.report"
+in_image_as "$image_ref" sh /release/in-image-report.sh "$gate_php_extension_dir" "$gate_fpm_prepare" "$gate_web_prepare" > "$work_dir/image.report" 2>&1 \
     || fail "report failed in the new image"
 section() {
     awk -v want="@@ $1" '$0 == want {on = 1; next} /^@@ / {on = 0} on' "$work_dir/$2.report"
@@ -209,6 +237,20 @@ section fpm-test image
 section fpm-test image | grep -qx 'exit=0' || fail "php-fpm -t failed with the deployed configuration"
 section fpm-test base | grep -qx 'exit=0' || fail "php-fpm -t fails in the deployed image too; fix gate_fpm_prepare"
 
+echo "== Web server configuration"
+for server in nginx apache; do
+    section "$server-test" base > "$work_dir/base.$server"
+    section "$server-test" image > "$work_dir/image.$server"
+    if grep -qx 'absent' "$work_dir/base.$server"; then
+        grep -qx 'absent' "$work_dir/image.$server" || fail "$server appeared in the new image"
+        echo "$server: not installed in the deployed image"
+        continue
+    fi
+    cat "$work_dir/image.$server"
+    grep -qx 'exit=0' "$work_dir/image.$server" || fail "$server configuration test failed in the new image"
+    grep -qx 'exit=0' "$work_dir/base.$server" || fail "$server configuration test fails in the deployed image too; fix gate_web_prepare"
+done
+
 echo "== Files"
 section files source | sort > "$work_dir/source.files"
 section files image | sort > "$work_dir/image.files"
@@ -229,6 +271,10 @@ echo "$(wc -l < "$work_dir/source.files") files identical to $php_source; $(wc -
 
 echo "== Multipart upload"
 in_image_as "$image_ref" sh /release/multipart-smoke.sh php || fail "multipart upload smoke test failed"
+
+echo "== PHP page through nginx and php-fpm"
+in_image_as "$image_ref" sh /release/fpm-nginx-smoke.sh "$expected_php" \
+    || fail "nginx -> php-fpm page or multipart upload failed"
 
 echo "== Regression checks"
 for check in "$release_dir"/regression/*.sh; do

@@ -24,11 +24,11 @@
 #       push, and print the pushed digest.
 set -euo pipefail
 
-builder_host=appbox@builder.grant.appboxes.co
-builder_ssh=(ssh -p 12246 -i /Users/rid/.ssh/appbox_ubuntuvps2_webtop
+builder_host=appbox@builder1.builder.appboxes.co
+builder_ssh=(ssh -p 10112 -i /Users/rid/.ssh/appbox_ubuntuvps2_webtop
     -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=10
     -o StrictHostKeyChecking=yes)
-builder_scp=(scp -P 12246 -i /Users/rid/.ssh/appbox_ubuntuvps2_webtop
+builder_scp=(scp -P 10112 -i /Users/rid/.ssh/appbox_ubuntuvps2_webtop
     -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=10
     -o StrictHostKeyChecking=yes)
 
@@ -118,8 +118,8 @@ case "$cylo_build_kind:$mode" in
         remote_suffix="$cylo_build_tag-trial"
         ;;
     official-php:release)
-        [[ "$(dockerfile_arg PHP_IMAGE)" =~ ^php:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$ ]] \
-            || die "PHP_IMAGE is not pinned by digest; run: $0 pin <php-tag>"
+        [[ "$(dockerfile_arg PHP_IMAGE)" =~ ^(php|repo\.cylo\.net/php-artifacts):[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$ ]] \
+            || die "PHP_IMAGE is not pinned by digest; run: $0 pin <php-tag>, or pin the php-artifacts digest"
         build_ref=$cylo_build_release_ref
         remote_suffix=$cylo_build_tag
         ;;
