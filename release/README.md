@@ -1,4 +1,43 @@
-# Releasing eveseat 5.0.1-3
+# Releasing eveseat 5.0.1-4
+
+5.0.1-4 is the released 5.0.1-3 image
+(`repo.cylo.net/eveseat@sha256:57f8ee40267ae1ab29f39d1210c8812b5964e2a6ab926b5130731228cc331f76`)
+with two startup files replaced (see `Dockerfile.release`):
+
+- `scripts/Entrypoint.sh` -> `/entrypoint.sh`. MariaDB waits are bounded by
+  `MYSQL_WAIT_TIMEOUT_SECONDS` (default 900, was a fixed 180 seconds). The
+  post-start Appbox callback no longer dies when its MariaDB wait runs out:
+  it keeps waiting for MariaDB, Redis and the web server for up to
+  `CALLBACK_READY_TIMEOUT_SECONDS` (default 3600) and then sends the callback.
+- `rootfs/etc/cont-init.d/00-permissions` -> `/etc/cont-init.d/00-permissions`.
+  It only changes ownership that is not already appbox's, instead of a
+  recursive chown of /home/appbox that rewrote every inode before s6 started
+  the services.
+
+Why: on busy nodes the s6 cont-init chown took minutes, so the supervised
+MariaDB answered after the callback's 180 second wait had already expired.
+The callback subshell then exited and the instance stayed "updating" in the
+API although SeAT was up (261698, 261879, 255637 on 21 October 2026).
+
+Build, gate and push from a clean checkout of branch `seat-db-wait`:
+
+    CYLO_BUILD_TMP=<scratch dir> release/build-on-builder.sh release
+
+The gate is `release/verify-overlay.sh`. Besides the registry precondition
+(base digest readable, 5.0.1-4 MANIFEST_UNKNOWN, checked before and after the
+tests) it checks that the 5.0.1-3 layers are unchanged, that each new layer
+holds only its overlay file, that the image config is identical, that the
+files equal the committed ones, and that PHP 8.2.35 still serves a multipart
+upload through nginx and php-fpm. It then runs
+`release/slow-db-callback-test.sh` three times in parallel (about 15
+minutes): on the new image with the s6 services held 240 seconds (must pass),
+on the new image held 100 seconds with `MYSQL_WAIT_TIMEOUT_SECONDS=30` (must
+pass through the retry), and on the 5.0.1-3 base image held 240 seconds (must
+fail with the lost callback). The test needs no internet: it builds a
+migrated SeAT install on an internal Docker network and sends the callback to
+a local endpoint that checks the test token.
+
+# Releasing eveseat 5.0.1-3 (previous release)
 
 The image is the deployed 5.0.1-2 digest with PHP's own files copied in from
 `repo.cylo.net/php-artifacts:docker-library-php-8.2.35-fpm-bookworm` (see `Dockerfile.release`).

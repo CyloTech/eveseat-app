@@ -12,6 +12,9 @@
 #       Build local/<image>-trial:<tag> with that PHP image, gate it against
 #       the real release tag. Never pushes.
 #
+# For cylo_build_kind=overlay (a previous release with committed files copied
+# over it), only `release` exists; the gate is cylo_build_gate.
+#
 # For cylo_build_kind=apt (distribution PHP packages upgraded in place):
 #   build-on-builder.sh pin <version>     e.g. pin 8.2.35-1~deb12u1
 #       Set the Dockerfile's PHP_FIXED_VERSION default. Does not commit.
@@ -27,7 +30,7 @@ set -euo pipefail
 builder_host=appbox@builder1.builder.appboxes.co
 builder_ssh=(ssh -p 10112 -i /Users/rid/.ssh/appbox_ubuntuvps2_webtop
     -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=10
-    -o StrictHostKeyChecking=yes)
+    -o StrictHostKeyChecking=yes -o ServerAliveInterval=30)
 builder_scp=(scp -P 10112 -i /Users/rid/.ssh/appbox_ubuntuvps2_webtop
     -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=10
     -o StrictHostKeyChecking=yes)
@@ -59,7 +62,10 @@ case "$cylo_build_tag" in *[!A-Za-z0-9._-]*) die "bad tag" ;; esac
 [ "$cylo_build_release_ref" = "repo.cylo.net/$cylo_build_image:$cylo_build_tag" ] || die "bad release ref"
 case "$cylo_build_dockerfile" in /*|*..*|*[!A-Za-z0-9._/-]*) die "bad Dockerfile path" ;; esac
 test -f "$cylo_build_dockerfile" || die "$cylo_build_dockerfile is missing"
-test -x release/verify-image.sh || die "release/verify-image.sh is not executable"
+cylo_build_gate=$(sed -n 's/^cylo_build_gate=//p' release/image.env)
+cylo_build_gate=${cylo_build_gate:-release/verify-image.sh}
+case "$cylo_build_gate" in /*|*..*|*[!A-Za-z0-9._/-]*) die "bad cylo_build_gate" ;; esac
+test -x "$cylo_build_gate" || die "$cylo_build_gate is not executable"
 
 dockerfile_arg() {
     sed -n "s/^ARG $1=//p" "$cylo_build_dockerfile"
@@ -129,6 +135,12 @@ case "$cylo_build_kind:$mode" in
         build_ref=$cylo_build_release_ref
         remote_suffix=$cylo_build_tag
         ;;
+    overlay:release)
+        # A previous release image with committed files copied over it; the
+        # gate checks that nothing else changed.
+        build_ref=$cylo_build_release_ref
+        remote_suffix=$cylo_build_tag
+        ;;
     *) die "usage: $0 pin <arg> | trial <arg> | release" ;;
 esac
 
@@ -187,14 +199,14 @@ echo "== build $build_ref"
 if [ "$mode" = trial ]; then
     echo "== gate (trial, no push)"
     "${builder_ssh[@]}" "$builder_host" "cd '$cylo_build_remote_dir/context' && \
-        env $gate_env ./release/verify-image.sh '$build_ref'"
+        env $gate_env ./$cylo_build_gate '$build_ref'"
     echo "TRIAL PASSED: $build_ref from $cylo_build_commit (not pushed)"
     exit 0
 fi
 
 echo "== gate, push"
 "${builder_ssh[@]}" "$builder_host" "cd '$cylo_build_remote_dir/context' && \
-    ./release/verify-image.sh '$build_ref' && \
+    ./$cylo_build_gate '$build_ref' && \
     docker push '$build_ref' && \
     docker buildx imagetools inspect '$build_ref' | head -n 3"
 echo "RELEASED $build_ref from $cylo_build_commit"
