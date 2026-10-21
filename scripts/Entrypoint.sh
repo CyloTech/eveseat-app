@@ -26,6 +26,15 @@ APP_VERSION=${SEAT_IMAGE_VERSION:-5.0.1-2}
 APP_RELEASE_MARKER=${SEAT_IMAGE_REVISION:-${APP_VERSION}}
 UPGRADE_BACKUP_DIR=${SEAT_UPGRADE_BACKUP_DIR:-/home/appbox/public_html/.seat-upgrade-backups}
 SDE_UPDATE_TIMEOUT_SECONDS=${SDE_UPDATE_TIMEOUT_SECONDS:-3600}
+# How long to wait for MariaDB to answer, both for the setup instance and for
+# the supervised one before the Appbox callback. On busy disks MariaDB can
+# take several minutes to start.
+MYSQL_WAIT_TIMEOUT_SECONDS=${MYSQL_WAIT_TIMEOUT_SECONDS:-900}
+[[ "${MYSQL_WAIT_TIMEOUT_SECONDS}" =~ ^[1-9][0-9]{0,5}$ ]] || MYSQL_WAIT_TIMEOUT_SECONDS=900
+# How long the post-start callback keeps waiting for MariaDB, Redis and the
+# web server before giving up until the next container start.
+CALLBACK_READY_TIMEOUT_SECONDS=${CALLBACK_READY_TIMEOUT_SECONDS:-3600}
+[[ "${CALLBACK_READY_TIMEOUT_SECONDS}" =~ ^[1-9][0-9]{0,5}$ ]] || CALLBACK_READY_TIMEOUT_SECONDS=3600
 TEMP_MYSQL_PID=""
 TEMP_REDIS_PID=""
 ADMIN_LOGIN_URL=""
@@ -313,15 +322,20 @@ start_temporary_mariadb() {
     wait_for_mysql
 }
 
-wait_for_mysql() {
-    local i
-    for i in {1..90}; do
-        if mysqladmin --socket="${MYSQL_SOCKET}" ping --silent >/dev/null 2>&1; then
-            return 0
+mysql_ready_within() {
+    local deadline=$((SECONDS + $1))
+    until mysqladmin --socket="${MYSQL_SOCKET}" ping --silent >/dev/null 2>&1; do
+        if (( SECONDS >= deadline )); then
+            return 1
         fi
         sleep 2
     done
-    fatal "Timed out waiting for MariaDB"
+}
+
+wait_for_mysql() {
+    if ! mysql_ready_within "${MYSQL_WAIT_TIMEOUT_SECONDS}"; then
+        fatal "Timed out waiting for MariaDB after ${MYSQL_WAIT_TIMEOUT_SECONDS} seconds"
+    fi
 }
 
 mysql_root_without_password() {
@@ -618,7 +632,7 @@ callback_installed() {
 }
 
 wait_for_runtime_services() {
-    wait_for_mysql
+    mysql_ready_within "${MYSQL_WAIT_TIMEOUT_SECONDS}" || return 1
     local i
     for i in {1..60}; do
         if redis-cli -h 127.0.0.1 ping >/dev/null 2>&1; then
@@ -639,12 +653,16 @@ wait_for_runtime_services() {
 background_post_start_callback() {
     (
         set +e
-        if wait_for_runtime_services; then
-            generate_admin_login_url
-            callback_installed
-        else
-            log "Runtime services did not become ready before callback timeout"
-        fi
+        local deadline=$((SECONDS + CALLBACK_READY_TIMEOUT_SECONDS))
+        until wait_for_runtime_services; do
+            if (( SECONDS >= deadline )); then
+                log "Runtime services did not become ready before callback timeout"
+                exit 0
+            fi
+            log "Runtime services are not ready yet; still waiting to send the Appbox callback"
+        done
+        generate_admin_login_url
+        callback_installed
     ) &
 }
 

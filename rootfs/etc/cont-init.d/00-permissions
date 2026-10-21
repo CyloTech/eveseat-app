@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 mkdir -p /run/php /run/mysqld /run/redis /home/appbox/logs/redis /home/appbox/logs/mysql /home/appbox/logs/seat
-chown -R 1000:1000 /run/php /run/mysqld /run/redis /home/appbox
+# Change only what appbox does not own yet. A recursive chown rewrites every
+# inode, which takes minutes on a large volume on a busy disk and holds back
+# MariaDB and the other services until it finishes.
+find /run/php /run/mysqld /run/redis /home/appbox \( ! -user 1000 -o ! -group 1000 \) -exec chown -h 1000:1000 {} +
